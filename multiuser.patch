@@ -1,0 +1,3571 @@
+diff --git a/Makefile b/Makefile
+index 09d790c..fe970f7 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,6 +1,9 @@
+ OBJS = \
+ 	bio.o\
+ 	console.o\
++	null.o\
++	zero.o\
++	devices.o\
+ 	exec.o\
+ 	file.o\
+ 	fs.o\
+@@ -27,7 +30,6 @@ OBJS = \
+ 	uart.o\
+ 	vectors.o\
+ 	vm.o\
+-
+ # Cross-compiling (e.g., on Mac OS X)
+ # TOOLPREFIX = i386-jos-elf
+ 
+@@ -143,7 +145,7 @@ tags: $(OBJS) entryother.S _init
+ vectors.S: vectors.pl
+ 	./vectors.pl > vectors.S
+ 
+-ULIB = ulib.o usys.o printf.o umalloc.o
++ULIB = ulib.o usys.o printf.o umalloc.o username.o groupname.o permissions.o
+ 
+ _%: %.o $(ULIB)
+ 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $@ $^
+@@ -163,7 +165,7 @@ mkfs: mkfs.c fs.h
+ # that disk image changes after first build are persistent until clean.  More
+ # details:
+ # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
+-.PRECIOUS: %.o
++.PRECIOUS: %.o devices/*.o
+ 
+ UPROGS=\
+ 	_cat\
+@@ -173,17 +175,25 @@ UPROGS=\
+ 	_init\
+ 	_kill\
+ 	_ln\
++	_login\
+ 	_ls\
+ 	_mkdir\
+ 	_rm\
+ 	_sh\
+ 	_stressfs\
++	_adduser\
++	_addgroup\
+ 	_usertests\
++	_tests\
+ 	_wc\
+ 	_zombie\
+-
+-fs.img: mkfs README $(UPROGS)
+-	./mkfs fs.img README $(UPROGS)
++	_pwd\
++	_whoami\
++	_id\
++	_su\
++	
++fs.img: mkfs README passwd group $(UPROGS)
++	./mkfs fs.img README passwd group $(UPROGS)
+ 
+ -include *.d
+ 
+@@ -249,7 +259,7 @@ qemu-nox-gdb: fs.img xv6.img .gdbinit
+ 
+ EXTRA=\
+ 	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
+-	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
++	ln.c ls.c mkdir.c rm.c stressfs.c tests.c usertests.c wc.c zombie.c\
+ 	printf.c umalloc.c\
+ 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
+ 	.gdbinit.tmpl gdbutil\
+diff --git a/addgroup.c b/addgroup.c
+new file mode 100644
+index 0000000..f9cf527
+--- /dev/null
++++ b/addgroup.c
+@@ -0,0 +1,41 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "username.h"
++
++/*
++	Syntax: addgroup groupname
++
++	arguments[0] -> value for groupname
++	arguments[1] -> users to be added in group
++*/
++int parsearguments(char arguments[2][50], int argc, char* argv[])
++{
++	if(argc<2)	// if no groupname is suplied, return error
++		return 0;
++
++	int i=1;
++	while(i<argc) {
++		strcpy(arguments[i-1],argv[i]);	// get the command value
++		i++;
++	}
++	return 1;
++}
++
++int
++main(int argc, char *argv[])
++{
++	char arguments[2][50];
++	int valid=parsearguments(arguments, argc, argv);
++	if(!valid) {
++		printf(2,"Error while creating group!\n");
++		exit();
++	}
++	struct group* newGroup=createGroup(arguments[0], arguments[1], 0);
++	//printf(1,"%s",newGroup->groupname);
++	if(newGroup==NA)
++		printf(2,"Error while creating group!\n");
++	else
++		addNewGroup(newGroup);
++	exit();
++}
+diff --git a/adduser.c b/adduser.c
+new file mode 100644
+index 0000000..242a69e
+--- /dev/null
++++ b/adduser.c
+@@ -0,0 +1,45 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "username.h"
++
++/*
++	Syntax: adduser [-c realname] username [-d homedir] [-p password]
++
++	arguments[0] -> value for realname
++	arguments[1] -> value for username
++	arguments[2] -> value for homedir
++	arguments[3] -> value for password
++*/
++
++int parsearguments(char arguments[4][50], int argc, char* argv[])
++{
++	if(argc<2)	// if no username is suplied, return error
++		return 0;
++
++	int i=1;
++	while(i<argc) {
++		strcpy(arguments[i-1],argv[i]);	// get the command value
++		i++;
++	}
++	return 1;
++}
++
++int
++main(int argc, char *argv[])
++{
++	char arguments[4][50];
++
++	int valid=parsearguments(arguments, argc, argv);
++	if(!valid) {
++		printf(1,"Error while creating user!\n");
++		exit();
++	}
++	struct user* newUser=createUser(arguments[0], arguments[1], arguments[2], arguments[3]);
++	if(newUser==NA) {
++		printf(1,"Error while creating user!\n");
++		exit();
++	}
++	addNewUser(newUser);
++	exit();
++}
+diff --git a/console.c b/console.c
+index a280d2b..5ff77e7 100644
+--- a/console.c
++++ b/console.c
+@@ -162,6 +162,8 @@ cgaputc(int c)
+   crt[pos] = ' ' | 0x0700;
+ }
+ 
++int check=1;
++
+ void
+ consputc(int c)
+ {
+@@ -175,7 +177,9 @@ consputc(int c)
+     uartputc('\b'); uartputc(' '); uartputc('\b');
+   } else
+     uartputc(c);
+-  cgaputc(c);
++  if(check){
++    cgaputc(c);
++  }
+ }
+ 
+ #define INPUT_BUF 128
+@@ -296,4 +300,3 @@ consoleinit(void)
+ 
+   ioapicenable(IRQ_KBD, 0);
+ }
+-
+diff --git a/defs.h b/defs.h
+index 82fb982..0363d5e 100644
+--- a/defs.h
++++ b/defs.h
+@@ -9,13 +9,14 @@ struct spinlock;
+ struct sleeplock;
+ struct stat;
+ struct superblock;
+-
+ // bio.c
+ void            binit(void);
+ struct buf*     bread(uint, uint);
+ void            brelse(struct buf*);
+ void            bwrite(struct buf*);
+ 
++// devices.c
++void		devinit(void);
+ // console.c
+ void            consoleinit(void);
+ void            cprintf(char*, ...);
+@@ -47,11 +48,14 @@ void            iunlock(struct inode*);
+ void            iunlockput(struct inode*);
+ void            iupdate(struct inode*);
+ int             namecmp(const char*, const char*);
+-struct inode*   namei(char*);
++//struct inode*   namei(char*);
++struct inode*	namei(char*,int);
+ struct inode*   nameiparent(char*, char*);
+ int             readi(struct inode*, char*, uint, uint);
+ void            stati(struct inode*, struct stat*);
+ int             writei(struct inode*, char*, uint, uint);
++//int             symlink(char*, char*);
++//int		unlink(char*);
+ 
+ // ide.c
+ void            ideinit(void);
+@@ -186,5 +190,15 @@ void            switchkvm(void);
+ int             copyout(pde_t*, uint, void*, uint);
+ void            clearpteu(pde_t *pgdir, char *uva);
+ 
++
++//sysfile.c
++int		readsymlink(const char*, char* , int);
++int		createsymlink(const char*, const char*);
++#define ROOT   0   // uid of the root user
++
++#define SETUID 		8
++#define READ 		4
++#define WRITE 		2
++#define EXECUTE 	1
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+diff --git a/devices.c b/devices.c
+new file mode 100644
+index 0000000..d9af92e
+--- /dev/null
++++ b/devices.c
+@@ -0,0 +1,8 @@
++void dev_null_init(void);
++void dev_zero_init(void);
++
++void devinit(void)
++{
++  dev_null_init();
++  dev_zero_init();
++}
+diff --git a/exec.c b/exec.c
+index b40134f..171765e 100644
+--- a/exec.c
++++ b/exec.c
+@@ -7,6 +7,17 @@
+ #include "x86.h"
+ #include "elf.h"
+ 
++char* strcat(char* to, const char* from)
++{
++
++  char* str = to + strlen(to);
++  while (*from != '\0'){
++	*str++ = *from++;
++  }
++  *str = '\0';
++  return to;
++}
++
+ int
+ exec(char *path, char **argv)
+ {
+@@ -18,10 +29,25 @@ exec(char *path, char **argv)
+   struct proghdr ph;
+   pde_t *pgdir, *oldpgdir;
+   struct proc *curproc = myproc();
+-
++  char pathname[40]; 
++  //ip=0;
+   begin_op();
++  if (readsymlink(path, pathname, 40) == 0) {
++      if ((ip = namei(pathname,1)) == 0) {
++          end_op();
++          cprintf("exec: failed to open symlink file '%s'\n", pathname);
++          return -1;
++      }
++  }
++  char buf[50] = "/";
++  strcat(buf, path);
+ 
+-  if((ip = namei(path)) == 0){
++  if((ip = namei(path,1)) == 0){
++    end_op();
++    cprintf("exec: fail\n");
++    return -1;
++  }
++  if((ip = namei(buf,1)) == 0){
+     end_op();
+     cprintf("exec: fail\n");
+     return -1;
+diff --git a/file.c b/file.c
+index 24b32c2..66947cd 100644
+--- a/file.c
++++ b/file.c
+@@ -9,6 +9,7 @@
+ #include "spinlock.h"
+ #include "sleeplock.h"
+ #include "file.h"
++#include "stat.h"
+ 
+ struct devsw devsw[NDEV];
+ struct {
+@@ -89,6 +90,16 @@ filestat(struct file *f, struct stat *st)
+     iunlock(f->ip);
+     return 0;
+   }
++  // Handle getting stats for soft links
++ /* if (f->type == FD_SYMLINK) {
++    memset(st, 0, sizeof(*st));
++    st->dev = 0;
++    st->ino = 0;
++    st->type = T_SYMLINK;
++    st->nlink = 1;
++    st->size = strlen(f->ip->symlink);
++    return 0;
++  }*/
+   return -1;
+ }
+ 
+@@ -109,7 +120,21 @@ fileread(struct file *f, char *addr, int n)
+     iunlock(f->ip);
+     return r;
+   }
++  // Handle opening and reading soft links
++ /* if (f->type == FD_SYMLINK) {
++    if (f->ip->type != T_SYMLINK) {
++      return -1;
++    }
++    int link_size = strlen(f->ip->symlink);
++    if (link_size <= n) {
++      memmove(addr, f->ip->symlink, link_size);
++      return link_size;
++    } else {
++      return -1;
++    }
++  }*/
+   panic("fileread");
++  //return -1;
+ }
+ 
+ //PAGEBREAK!
+diff --git a/file.h b/file.h
+index 0990c82..b91f41c 100644
+--- a/file.h
++++ b/file.h
+@@ -1,5 +1,5 @@
+ struct file {
+-  enum { FD_NONE, FD_PIPE, FD_INODE } type;
++  enum { FD_NONE, FD_PIPE, FD_INODE, FD_SYMLINK} type;
+   int ref; // reference count
+   char readable;
+   char writable;
+@@ -16,13 +16,16 @@ struct inode {
+   int ref;            // Reference count
+   struct sleeplock lock; // protects everything below here
+   int valid;          // inode has been read from disk?
+-
+   short type;         // copy of disk inode
+   short major;
+   short minor;
+   short nlink;
+   uint size;
+   uint addrs[NDIRECT+1];
++  uint uid;			// user id
++  uint gid;			// group id
++  uint mode;			// read, write, execute
++  //char symlink[BSIZE];
+ };
+ 
+ // table mapping major device number to
+@@ -35,3 +38,5 @@ struct devsw {
+ extern struct devsw devsw[];
+ 
+ #define CONSOLE 1
++#define DEV_NULL 2
++#define DEV_ZERO 3
+diff --git a/fs.c b/fs.c
+index f77275f..0179419 100644
+--- a/fs.c
++++ b/fs.c
+@@ -20,7 +20,7 @@
+ #include "fs.h"
+ #include "buf.h"
+ #include "file.h"
+-
++//#define SYMLINK_MAX 14
+ #define min(a, b) ((a) < (b) ? (a) : (b))
+ static void itrunc(struct inode*);
+ // there should be one superblock per disk device, but we run with
+@@ -230,6 +230,9 @@ iupdate(struct inode *ip)
+   dip->minor = ip->minor;
+   dip->nlink = ip->nlink;
+   dip->size = ip->size;
++  dip->uid = ip->uid;
++  dip->gid = ip->gid;
++  dip->mode = ip->mode;
+   memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
+   log_write(bp);
+   brelse(bp);
+@@ -303,6 +306,9 @@ ilock(struct inode *ip)
+     ip->minor = dip->minor;
+     ip->nlink = dip->nlink;
+     ip->size = dip->size;
++    ip->uid = dip->uid;
++    ip->gid = dip->gid;
++    ip->mode = dip->mode;
+     memmove(ip->addrs, dip->addrs, sizeof(ip->addrs));
+     brelse(bp);
+     ip->valid = 1;
+@@ -444,6 +450,9 @@ stati(struct inode *ip, struct stat *st)
+   st->type = ip->type;
+   st->nlink = ip->nlink;
+   st->size = ip->size;
++  st->uid = ip->uid;
++  st->gid = ip->gid;
++  st->mode = ip->mode;
+ }
+ 
+ //PAGEBREAK!
+@@ -622,12 +631,15 @@ skipelem(char *path, char *name)
+ // path element into name, which must have room for DIRSIZ bytes.
+ // Must be called inside a transaction since it calls iput().
+ static struct inode*
+-namex(char *path, int nameiparent, char *name)
++namex(struct inode* root, char *path, int nameiparent, char *name, int depth, int cont)
+ {
+   struct inode *ip, *next;
+-
++  //char buf[128];
++  //char tname[DIRSIZ];
+   if(*path == '/')
+     ip = iget(ROOTDEV, ROOTINO);
++  else if(root)
++    ip = idup(root);
+   else
+     ip = idup(myproc()->cwd);
+ 
+@@ -646,25 +658,50 @@ namex(char *path, int nameiparent, char *name)
+       iunlockput(ip);
+       return 0;
+     }
+-    iunlockput(ip);
++    //ilock(next);
++    iunlock(ip);
++    
+     ip = next;
++    /*
++    if(next->type == T_SYMLINK && cont){
++    	if(next->size >= sizeof(buf) || readi(next,buf,0,next->size) != next->size){
++    	  iunlockput(next);
++    	  iput(ip);
++    	  return 0;
++    	}
++    	buf[next->size]=0;
++    	iunlockput(next);
++    	//ip=next;
++    	next = namex(next,buf,0,tname,depth+1,cont);
++    }
++    else{
++    	iunlock(next);
++    }
++    
++    iput(ip);
++    ip=next;*/
+   }
++  //iunlock(next);
+   if(nameiparent){
+     iput(ip);
+     return 0;
+   }
++  //cprintf("YO");
+   return ip;
+ }
+ 
++
+ struct inode*
+-namei(char *path)
++namei(char *path, int cont)
+ {
+   char name[DIRSIZ];
+-  return namex(path, 0, name);
++  return namex(0,path, 0, name,0,cont);
+ }
+ 
+ struct inode*
+ nameiparent(char *path, char *name)
+ {
+-  return namex(path, 1, name);
++  //return namex(path, 1, name);
++  return namex(0,path, 1, name,0,1);
+ }
++
+diff --git a/fs.h b/fs.h
+index 3214f1d..24b2a60 100644
+--- a/fs.h
++++ b/fs.h
+@@ -3,8 +3,11 @@
+ 
+ 
+ #define ROOTINO 1  // root i-number
+-#define BSIZE 512  // block size
+-
++#define BSIZE 2048  // block size
++#define T_DIR  1   // Directory
++#define T_FILE 2   // File
++#define T_DEV  3   // Device
++#define T_SYMLINK  4   // Device
+ // Disk layout:
+ // [ boot block | super block | log | inode blocks |
+ //                                          free bit map | data blocks]
+@@ -21,7 +24,7 @@ struct superblock {
+   uint bmapstart;    // Block number of first free map block
+ };
+ 
+-#define NDIRECT 12
++#define NDIRECT 9
+ #define NINDIRECT (BSIZE / sizeof(uint))
+ #define MAXFILE (NDIRECT + NINDIRECT)
+ 
+@@ -33,6 +36,9 @@ struct dinode {
+   short nlink;          // Number of links to inode in file system
+   uint size;            // Size of file (bytes)
+   uint addrs[NDIRECT+1];   // Data block addresses
++  uint uid;			// user id
++  uint gid;			// group id
++  uint mode;			// read, write, execute
+ };
+ 
+ // Inodes per block.
+diff --git a/group b/group
+new file mode 100644
+index 0000000..88ce41e
+--- /dev/null
++++ b/group
+@@ -0,0 +1 @@
++root:0:root
+diff --git a/groupname.c b/groupname.c
+new file mode 100644
+index 0000000..b1925c2
+--- /dev/null
++++ b/groupname.c
+@@ -0,0 +1,227 @@
++#include "types.h"
++#include "stat.h"
++#include "fcntl.h"
++#include "user.h"
++#include "username.h"
++
++struct group* StringGroup(char* string) 
++{
++   struct group* currGroup=(struct group*)malloc(sizeof(struct group));
++   char tmp[12][50];
++   char buf[50];
++
++   int pnt=0;                 // pnt points to the absolute position in the string
++   for(int i=0;i<2;i++) {     // parses group info with delimiter ':'
++      int pos=0;             // curr points to the relative position in the string
++      while(string[pos+pnt]!=':' && string[pos+pnt]!='\0') {
++         buf[pos]=string[pos+pnt];
++         pos++;
++      }
++      buf[pos]='\0';
++      strcpy(tmp[i],buf);
++      pnt+=pos+1;         // pnt points to where curr stoped + 1 to skip ':'
++   }
++
++   strcpy(currGroup->groupname, tmp[0]);
++   currGroup->gid=atoi(tmp[1]);
++   currGroup->listofusers=NA;
++   
++   while(1) {             // parses users with delimiter ','
++      int curr=0;
++      while(string[curr+pnt]!=',' && string[curr+pnt]!='\0') {
++         buf[curr]=string[curr+pnt];
++         curr++;
++      }
++       buf[curr]='\0';
++      
++      struct user* currUser=getUserFromUsername(buf);
++      currGroup->listofusers=addingUser(currGroup->listofusers, currUser);
++      if(string[curr+pnt]=='\0')
++         break;
++      else
++         pnt+=curr+1;
++   }
++   currGroup->next=NA;
++
++   return currGroup;
++}
++
++void GroupToString(struct group* currGroup, char* string)
++{
++   strcpy(string, currGroup->groupname);
++   strcat(string, ":");
++
++   char gidString[50];
++   itoa(currGroup->gid, gidString);
++   strcat(string, gidString);
++   strcat(string, ":");
++
++   int firstuser=1;
++   struct user* tmpUser=currGroup->listofusers;
++   while(tmpUser!=NA) {
++      if(!firstuser)                         // the first user doesn't have an ',' before it, other users do
++         strcat(string, ",");
++      else
++         firstuser=0;
++      strcat(string, tmpUser->user);
++
++      tmpUser=tmpUser->next;
++   }
++   strcat(string, "\n");
++}
++
++struct group* createGroup(char* groupname, char* users, int adduser)
++{
++   struct group* newGroup=(struct group*)malloc(sizeof(struct group));
++
++   strcpy(newGroup->groupname, groupname);
++   
++   if(adduser==0){
++      int gid=getNextAvailableGid();                // else get available gid that is greater than 1000
++      newGroup->gid=gid;
++   }
++   
++   if(adduser==1) {
++      struct user* currUser=getUserFromUsername(groupname);
++      newGroup->listofusers=currUser;
++      newGroup->gid=currUser->gid;
++      //newGroup->next=NA;
++   }
++   else if(adduser==0){
++      newGroup->listofusers=NA;
++      int pnt=0;
++      char buf[50];
++      while(1) {             // parses users with delimiter ','
++	      int curr=0;
++	      while(users[curr+pnt]!=',' && users[curr+pnt]!='\0') {
++		 buf[curr]=users[curr+pnt];
++		 curr++;
++	      }
++	       buf[curr]='\0';
++	      
++	      struct user* currUser=getUserFromUsername(buf);
++	      newGroup->listofusers=addingUser(newGroup->listofusers, currUser);
++	      if(users[curr+pnt]=='\0')
++		 break;
++	      else
++		 pnt+=curr+1;
++   }
++   //newGroup->next=NA;
++   }
++   return newGroup;
++}
++
++void addNewGroup(struct group* newGroup)
++{
++   struct group* groupList=selectgroups();
++   groupList=addingGroup(groupList, newGroup);
++   updateGroupFile(groupList);
++   removeGroup(groupList);
++   //exit();
++}
++
++void FilePrint(char* file)
++{
++   char working[50];
++   strcpy(working,"/etc/");
++   strcat(working,file);
++
++   int fd=open(working,O_RDONLY);
++
++   if(fd!=-1) {
++      int sz=findsize(fd);
++      char contents[sz];
++
++      read(fd,contents,sz);
++      printf(1,"%s\n", contents);
++   }
++}
++
++int Groupcmp(struct group* g1, struct group* g2)
++{
++	if(g1->gid>g2->gid) return 1;
++	if(g1->gid<g2->gid) return -1;
++	return 0;
++}
++
++void updateGroupFile(struct group* groupList)
++{
++   int fd=open("/etc/group",O_WRONLY | O_CREATE);
++   while(groupList!=NA) {
++      char groupString[50*16];
++      GroupToString(groupList, groupString);
++      write(fd, groupString, strlen(groupString));
++      groupList=groupList->next;
++   }
++
++   close(fd);
++   //exit();
++}
++
++struct group* addingGroup(struct group* list, struct group* currGroup)
++{ 
++   if(list==NA)
++   		return currGroup;
++
++   if(Groupcmp(list, currGroup)>0) {
++   	currGroup->next=list;
++   	return currGroup;
++   }
++
++   struct group* tmpGroup=list;
++   while(tmpGroup->next!=NA && (Groupcmp(tmpGroup->next, currGroup)<=0))
++   	tmpGroup=tmpGroup->next;
++
++   currGroup->next=tmpGroup->next;
++   tmpGroup->next=currGroup;
++   return list;
++}
++
++struct group* selectgroups()
++{
++   struct group* list=NA;
++   int fd=open("/etc/group",O_RDONLY);
++   if(fd<0) printf(1,"cant open file");
++   int size=findsize(fd);
++   char content[size];
++
++   read(fd,content,size);
++
++   char* token = strtok(content, "\n");
++   while( token != NA ) {
++      struct group* currGroup=StringGroup(token);
++      list=addingGroup(list, currGroup);
++
++      token = strtok(NA, "\n");
++   }
++
++   close(fd);
++   return list;
++   //printf(1,"%s",list->groupname);
++}
++
++struct group* getGroupFromGid(int gid)
++{
++   struct group* list=selectgroups();
++
++   struct group* tmpGroup=list;
++   while(tmpGroup!=NA) {
++      if(gid==tmpGroup->gid) {
++         tmpGroup->next=NA;               // return only this group, not the whole list
++         return tmpGroup;
++      }
++      tmpGroup=tmpGroup->next;
++   }
++   removeGroup(list);
++   return NA;
++}
++
++void removeGroup(struct group* list)
++{
++   struct group* tmpGroup;
++   while(list!=NA) {
++      tmpGroup=list;
++      list=list->next;
++      free(tmpGroup);
++   }
++}
+diff --git a/id.c b/id.c
+new file mode 100644
+index 0000000..08aaa82
+--- /dev/null
++++ b/id.c
+@@ -0,0 +1,13 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "username.h"
++
++int
++main(int argc, char *argv[])
++{
++	int uid = getuid();
++	struct group* g=getGroupFromGid(getgid_from_uid(uid));
++	printf(1,"uid: %d,gid: %d,group: %s\n",uid,getgid_from_uid(uid),g);
++	exit();
++}
+diff --git a/init.c b/init.c
+index 046b551..47d6140 100644
+--- a/init.c
++++ b/init.c
+@@ -11,24 +11,41 @@ int
+ main(void)
+ {
+   int pid, wpid;
+-
++  //int f = 0;
++  if(getpid() != 1){
++		printf(2, "init: already running\n");
++		exit();
++  }
++  setuid(0);
+   if(open("console", O_RDWR) < 0){
+     mknod("console", 1, 1);
+     open("console", O_RDWR);
+   }
++  //if(open("/dev/null", O_RDWR) < 0){
++     mknod("/dev/null", 2 , 1);
++     //open("/dev/null",O_RDWR);
++  //}
++  //if(open("/dev/zero", O_RDWR) < 0){
++     mknod("/dev/zero", 3 , 1);
++     //open("/dev/zero",O_RDWR);
++  //}
+   dup(0);  // stdout
+   dup(0);  // stderr
+-
++  //printf(1,"reached\n");
+   for(;;){
+-    printf(1, "init: starting sh\n");
++    printf(1,"init: starting login\n");
+     pid = fork();
+     if(pid < 0){
+       printf(1, "init: fork failed\n");
+       exit();
+     }
+     if(pid == 0){
+-      exec("sh", argv);
+-      printf(1, "init: exec sh failed\n");
++      /*while(1){
++	exec("login", argv);
++      }*/
++      //exec("sh", argv);
++      exec("login", argv);
++      printf(1,"init: exec login failed\n");
+       exit();
+     }
+     while((wpid=wait()) >= 0 && wpid != pid)
+diff --git a/ln.c b/ln.c
+index cf8a64e..f0291e2 100644
+--- a/ln.c
++++ b/ln.c
+@@ -5,11 +5,31 @@
+ int
+ main(int argc, char *argv[])
+ {
+-  if(argc != 3){
++  /*if(argc != 3){
+     printf(2, "Usage: ln old new\n");
+     exit();
+   }
+   if(link(argv[1], argv[2]) < 0)
+     printf(2, "link %s %s: failed\n", argv[1], argv[2]);
++  exit();*/
++  
++  if(argc < 3){
++  	printf(2, "1) Usage-Hard links: ln old new\n");
++  	printf(2, "2)Usage-Soft links: ln -s old new\n");
++  	exit();
++  }
++  if(argc == 3){
++  	if(link(argv[1],argv[2])<0){
++  		printf(2,"hard link %s %s: failed\n",argv[1],argv[2]);
++  	}
++  	exit();
++  }
++  if(argc == 4){
++  	if(symlink(argv[2],argv[3])<0){
++  		printf(2,"soft link %s %s: failed\n",argv[2],argv[3]);
++  	}
++  	exit();
++  }
+   exit();
++  
+ }
+diff --git a/login.c b/login.c
+new file mode 100644
+index 0000000..c5c1376
+--- /dev/null
++++ b/login.c
+@@ -0,0 +1,63 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "username.h"
++//#include "grpname.h"
++
++char *argv[] = { "sh", 0 };
++
++struct user* userlogin()
++{
++	char user[50];
++	char pass[50];
++
++	while(1) {
++		//for username input
++		printf(1,"Enter Username: ");
++		gets(user, 50);
++		user[strlen(user)-1]='\0'; //Formating of input
++		//for password
++		printf(1,"Enter Password: ");
++		//passEcho();
++		gets(pass, 50);
++		//passEcho();
++		printf(1,"\n");
++		pass[strlen(pass)-1]='\0';  //formating of password
++
++		struct user* user1 =checkUser(user, pass);
++		if(user1)
++			return user1;
++		else
++			printf(1,"Your username or password is incorrect, Try Again!\n");
++	}
++}
++
++void terminal()
++{
++	char *shargv[] = { "sh", 0 };
++	int wpid;
++	struct user* currUser=userlogin();
++	int uid = currUser->uid;
++	//printf(1,"%d",uid);
++	int pid = fork();
++	if (pid < 0) {
++		printf(1,"fork failed\n");
++		exit();
++	}
++	if (pid == 0) {
++		printf(1,"starting sh with uid %d\n", uid);
++		setuid(uid);
++		chdir(currUser->homedir);
++		exec("sh", shargv);
++		printf(1,"exec sh failed\n");
++		exit();
++	}
++	while((wpid=wait()) >= 0 && wpid != pid)
++		printf(1,"zombie!\n");
++	exit();
++}
++
++int main(int argc, char *argv[])
++{
++	terminal();
++}
+diff --git a/ls.c b/ls.c
+index 2862913..12abdb4 100644
+--- a/ls.c
++++ b/ls.c
+@@ -2,6 +2,7 @@
+ #include "stat.h"
+ #include "user.h"
+ #include "fs.h"
++#include "username.h"
+ 
+ char*
+ fmtname(char *path)
+@@ -63,7 +64,12 @@ ls(char *path)
+         printf(1, "ls: cannot stat %s\n", buf);
+         continue;
+       }
+-      printf(1, "%s %d %d %d\n", fmtname(buf), st.type, st.ino, st.size);
++      struct user* f =getUserFromUid(st.uid);
++      struct group* g=getGroupFromGid(st.gid);
++      char ArrayPermissions[10];
++      getPermissions(st.mode, st.type, ArrayPermissions);
++
++      printf(1,"%s %d %s %s %d %s\n", ArrayPermissions, st.type, f->user, g->groupname, st.size, fmtname(buf));
+     }
+     break;
+   }
+diff --git a/main.c b/main.c
+index 9924e64..5aff576 100644
+--- a/main.c
++++ b/main.c
+@@ -25,6 +25,7 @@ main(void)
+   picinit();       // disable pic
+   ioapicinit();    // another interrupt controller
+   consoleinit();   // console hardware
++  devinit();	   // device files
+   uartinit();      // serial port
+   pinit();         // process table
+   tvinit();        // trap vectors
+diff --git a/mkfs.c b/mkfs.c
+index 8e011a7..92a0bf4 100644
+--- a/mkfs.c
++++ b/mkfs.c
+@@ -10,12 +10,14 @@
+ #include "fs.h"
+ #include "stat.h"
+ #include "param.h"
++#include "username.h"
+ 
+ #ifndef static_assert
+ #define static_assert(a, b) do { switch (0) case 0: case (a): ; } while (0)
+ #endif
+-
+ #define NINODES 200
++//Default mode for file inode i.e. read, write & execute for everyone
++#define DEFAULT_MODE 0755
+ 
+ // Disk layout:
+ // [ boot block | sb block | log | inode blocks | free bit map | data blocks ]
+@@ -32,14 +34,16 @@ char zeroes[BSIZE];
+ uint freeinode = 1;
+ uint freeblock;
+ 
+-
+ void balloc(int);
+ void wsect(uint, void*);
+ void winode(uint, struct dinode*);
+ void rinode(uint inum, struct dinode *ip);
+ void rsect(uint sec, void *buf);
+-uint ialloc(ushort type);
++uint ialloc(ushort type, int uid, int gid, uint mode);
+ void iappend(uint inum, void *p, int n);
++uint rootino;
++uint devino,etcino,homeino;
++
+ 
+ // convert to intel byte order
+ ushort
+@@ -68,11 +72,9 @@ int
+ main(int argc, char *argv[])
+ {
+   int i, cc, fd;
+-  uint rootino, inum, off;
++  uint dirino,inum;
+   struct dirent de;
+   char buf[BSIZE];
+-  struct dinode din;
+-
+ 
+   static_assert(sizeof(int) == 4, "Integers must be 4 bytes!");
+ 
+@@ -104,7 +106,7 @@ main(int argc, char *argv[])
+ 
+   printf("nmeta %d (boot, super, log blocks %u inode blocks %u, bitmap blocks %u) blocks %d total %d\n",
+          nmeta, nlog, ninodeblocks, nbitmap, nblocks, FSSIZE);
+-
++  //printf("reached");
+   freeblock = nmeta;     // the first free block that we can allocate
+ 
+   for(i = 0; i < FSSIZE; i++)
+@@ -113,8 +115,8 @@ main(int argc, char *argv[])
+   memset(buf, 0, sizeof(buf));
+   memmove(buf, &sb, sizeof(sb));
+   wsect(1, buf);
+-
+-  rootino = ialloc(T_DIR);
++  // /
++  rootino = ialloc(T_DIR, ROOT, ROOT, DEFAULT_MODE);
+   assert(rootino == ROOTINO);
+ 
+   bzero(&de, sizeof(de));
+@@ -127,6 +129,57 @@ main(int argc, char *argv[])
+   strcpy(de.name, "..");
+   iappend(rootino, &de, sizeof(de));
+ 
++
++  // /dev
++  devino = ialloc(T_DIR, ROOT, ROOT, DEFAULT_MODE);
++  bzero(&de, sizeof(de));
++  de.inum = xshort(devino);
++  strcpy(de.name, ".");
++  iappend(devino, &de, sizeof(de));
++
++  bzero(&de, sizeof(de));
++  de.inum = xshort(rootino);
++  strcpy(de.name, "..");
++  iappend(devino, &de, sizeof(de));
++
++  bzero(&de, sizeof(de));
++  de.inum = xshort(devino);
++  strcpy(de.name, "dev");
++  iappend(rootino, &de, sizeof(de));
++  // /etc
++	etcino = ialloc(T_DIR, ROOT, ROOT, DEFAULT_MODE);
++
++	bzero(&de, sizeof(de));
++	de.inum = xshort(etcino);
++	strcpy(de.name, ".");
++	iappend(etcino, &de, sizeof(de));
++
++	bzero(&de, sizeof(de));
++	de.inum = xshort(rootino);
++	strcpy(de.name, "..");
++	iappend(etcino, &de, sizeof(de));
++
++	bzero(&de, sizeof(de));
++	de.inum = xshort(etcino);
++	strcpy(de.name, "etc");
++	iappend(rootino, &de, sizeof(de));
++	// /home
++	homeino = ialloc(T_DIR, ROOT, ROOT, DEFAULT_MODE);
++	bzero(&de, sizeof(de));
++	de.inum = xshort(homeino);
++	strcpy(de.name, ".");
++	iappend(homeino, &de, sizeof(de));
++
++	bzero(&de, sizeof(de));
++	de.inum = xshort(rootino);
++	strcpy(de.name, "..");
++	iappend(homeino, &de, sizeof(de));
++
++	bzero(&de, sizeof(de));
++	de.inum = xshort(homeino);
++	strcpy(de.name, "home");
++	iappend(rootino, &de, sizeof(de));
++
+   for(i = 2; i < argc; i++){
+     assert(index(argv[i], '/') == 0);
+ 
+@@ -134,20 +187,29 @@ main(int argc, char *argv[])
+       perror(argv[i]);
+       exit(1);
+     }
+-
++    dirino = rootino;
+     // Skip leading _ in name when writing to file system.
+     // The binaries are named _rm, _cat, etc. to keep the
+     // build operating system from trying to execute them
+     // in place of system binaries like rm and cat.
+     if(argv[i][0] == '_')
+-      ++argv[i];
+-
+-    inum = ialloc(T_FILE);
++       argv[i] += 1;
++    if(strncmp(argv[i], "passwd", 6) == 0){
++    	dirino = etcino;
++    }
++    if(strncmp(argv[i], "group", 5) == 0){
++      dirino = etcino;
++    }
++    if(strncmp(argv[i], "su", 2) == 0){
++    	inum = ialloc(T_FILE, ROOT, ROOT, 04755);
++    }
++    else
++    	inum = ialloc(T_FILE, ROOT, ROOT, dirino==etcino ? 0644: DEFAULT_MODE);
+ 
+     bzero(&de, sizeof(de));
+     de.inum = xshort(inum);
+     strncpy(de.name, argv[i], DIRSIZ);
+-    iappend(rootino, &de, sizeof(de));
++    iappend(dirino, &de, sizeof(de));
+ 
+     while((cc = read(fd, buf, sizeof(buf))) > 0)
+       iappend(inum, buf, cc);
+@@ -155,15 +217,428 @@ main(int argc, char *argv[])
+     close(fd);
+   }
+ 
+-  // fix size of root inode dir
+-  rinode(rootino, &din);
++  balloc(freeblock);
++  exit(0);
++}
++
++void
++wsect(uint sec, void *buf)
++{
++  if(lseek(fsfd, sec * BSIZE, 0) != sec * BSIZE){
++    perror("lseek");
++    exit(1);
++  }
++  if(write(fsfd, buf, BSIZE) != BSIZE){
++    perror("write");
++    exit(1);
++  }
++}
++
++void
++winode(uint inum, struct dinode *ip)
++{
++  char buf[BSIZE];
++  uint bn;
++  struct dinode *dip;
++
++  bn = IBLOCK(inum, sb);
++  rsect(bn, buf);
++  dip = ((struct dinode*)buf) + (inum % IPB);
++  *dip = *ip;
++  wsect(bn, buf);
++}
++
++void
++rinode(uint inum, struct dinode *ip)
++{
++  char buf[BSIZE];
++  uint bn;
++  struct dinode *dip;
++
++  bn = IBLOCK(inum, sb);
++  rsect(bn, buf);
++  dip = ((struct dinode*)buf) + (inum % IPB);
++  *ip = *dip;
++}
++
++void
++rsect(uint sec, void *buf)
++{
++  if(lseek(fsfd, sec * BSIZE, 0) != sec * BSIZE){
++    perror("lseek");
++    exit(1);
++  }
++  if(read(fsfd, buf, BSIZE) != BSIZE){
++    perror("read");
++    exit(1);
++  }
++}
++
++uint
++ialloc(ushort type, int uid, int gid, uint mode)
++{
++  uint inum = freeinode++;
++  struct dinode din;
++
++  bzero(&din, sizeof(din));
++  din.type = xshort(type);
++  din.nlink = xshort(1);
++  din.size = xint(0);
++  din.uid=xint(uid);
++  din.gid=xint(gid);
++  din.mode=xint(mode);
++  winode(inum, &din);
++  return inum;
++}
++
++void
++balloc(int used)
++{
++  uchar buf[BSIZE];
++  int i;
++
++  printf("balloc: first %d blocks have been allocated\n", used);
++  assert(used < BSIZE*8);
++  bzero(buf, BSIZE);
++  for(i = 0; i < used; i++){
++    buf[i/8] = buf[i/8] | (0x1 << (i%8));
++  }
++  printf("balloc: write bitmap block at sector %d\n", sb.bmapstart);
++  wsect(sb.bmapstart, buf);
++}
++
++#define min(a, b) ((a) < (b) ? (a) : (b))
++
++void
++iappend(uint inum, void *xp, int n)
++{
++  char *p = (char*)xp;
++  uint fbn, off, n1;
++  struct dinode din;
++  char buf[BSIZE];
++  uint indirect[NINDIRECT];
++  uint x;
++
++  rinode(inum, &din);
+   off = xint(din.size);
+-  off = ((off/BSIZE) + 1) * BSIZE;
++  // printf("append inum %d at off %d sz %d\n", inum, off, n);
++  while(n > 0){
++    fbn = off / BSIZE;
++    assert(fbn < MAXFILE);
++    if(fbn < NDIRECT){
++      if(xint(din.addrs[fbn]) == 0){
++        din.addrs[fbn] = xint(freeblock++);
++      }
++      x = xint(din.addrs[fbn]);
++    } else {
++      if(xint(din.addrs[NDIRECT]) == 0){
++        din.addrs[NDIRECT] = xint(freeblock++);
++      }
++      rsect(xint(din.addrs[NDIRECT]), (char*)indirect);
++      if(indirect[fbn - NDIRECT] == 0){
++        indirect[fbn - NDIRECT] = xint(freeblock++);
++        wsect(xint(din.addrs[NDIRECT]), (char*)indirect);
++      }
++      x = xint(indirect[fbn-NDIRECT]);
++    }
++    n1 = min(n, (fbn + 1) * BSIZE - off);
++    rsect(x, buf);
++    bcopy(p, buf + off - (fbn * BSIZE), n1);
++    wsect(x, buf);
++    n -= n1;
++    off += n1;
++    p += n1;
++  }
+   din.size = xint(off);
+-  winode(rootino, &din);
++  winode(inum, &din);
++}
++/*
++#include <stdio.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <string.h>
++#include <fcntl.h>
++#include <assert.h>
++
++#define stat xv6_stat  // avoid clash with host struct stat
++#include "types.h"
++#include "fs.h"
++#include "stat.h"
++#include "param.h"
++
++#ifndef static_assert
++#define static_assert(a, b) do { switch (0) case 0: case (a): ; } while (0)
++#endif
++
++#define NINODES 200
++
++//Default mode for file inode i.e. read, write & execute for everyone
++#define DEFAULT_MODE 0777
++
++// Disk layout:
++// [ boot block | sb block | log | inode blocks | free bit map | data blocks ]
++
++int nbitmap = FSSIZE/(BSIZE*8) + 1;
++int ninodeblocks = NINODES / IPB + 1;
++int nlog = LOGSIZE;
++int nmeta;    // Number of meta blocks (boot, sb, nlog, inode, bitmap)
++int nblocks;  // Number of data blocks
++
++int fsfd;
++struct superblock sb;
++char zeroes[BSIZE];
++uint freeinode = 1;
++uint freeblock;
++
++// gloabal inode variables for directries
++uint root_inode_no;
++uint dev_inode_no;
++uint bin_inode_no;
++uint home_inode_no;
++uint super_user_inode_no;
++uint etc_inode_no;
++
++
++void balloc(int);
++void wsect(uint, void*);
++void winode(uint, struct dinode*);
++void rinode(uint inum, struct dinode *ip);
++void rsect(uint sec, void *buf);
++uint ialloc(ushort type, uint mode); // assigns a disk inode to a newly created file & it requires mode of file
++void iappend(uint inum, void *p, int n);
++
++// convert to intel byte order
++ushort
++xshort(ushort x)
++{
++  ushort y;
++  uchar *a = (uchar*)&y;
++  a[0] = x;
++  a[1] = x >> 8;
++  return y;
++}
++
++uint
++xint(uint x)
++{
++  uint y;
++  uchar *a = (uchar*)&y;
++  a[0] = x;
++  a[1] = x >> 8;
++  a[2] = x >> 16;
++  a[3] = x >> 24;
++  return y;
++}
++
++// create required default directories with all permisions
++void
++make_directories(void)
++{
++	struct dirent dr;
++
++	// for mount point directory i.e. /
++	// ROOTINO is 1
++	root_inode_no = ialloc(T_DIR, DEFAULT_MODE);
++	assert(root_inode_no == ROOTINO);
++	
++	// writes 0 to inode
++	bzero(&dr, sizeof(dr));
++	dr.inum = xshort(root_inode_no);
++	strcpy(dr.name, ".");
++	iappend(root_inode_no, &dr, sizeof(dr));
++
++	bzero(&dr, sizeof(dr));
++        dr.inum = xshort(root_inode_no);
++        strcpy(dr.name, "..");
++        iappend(root_inode_no, &dr, sizeof(dr));
++
++	// for dev directory i.e. /dev
++	dev_inode_no = ialloc(T_DIR, DEFAULT_MODE);
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(dev_inode_no);
++        strcpy(dr.name, ".");
++        iappend(dev_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(root_inode_no);
++        strcpy(dr.name, "..");
++        iappend(dev_inode_no, &dr, sizeof(dr));
++
++	bzero(&dr, sizeof(dr));
++        dr.inum = xshort(dev_inode_no);
++        strcpy(dr.name, "dev");
++        iappend(root_inode_no, &dr, sizeof(dr));
++
++
++	// for bin directory i.e. /bin
++        bin_inode_no = ialloc(T_DIR, DEFAULT_MODE);
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(bin_inode_no);
++        strcpy(dr.name, ".");
++        iappend(bin_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(root_inode_no);
++        strcpy(dr.name, "..");
++        iappend(bin_inode_no, &dr, sizeof(dr));
++	
++	bzero(&dr, sizeof(dr));
++        dr.inum = xshort(bin_inode_no);
++        strcpy(dr.name, "bin");
++        iappend(root_inode_no, &dr, sizeof(dr));
++
++	// for home directory i.e. /home
++        home_inode_no = ialloc(T_DIR, DEFAULT_MODE);
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(home_inode_no);
++        strcpy(dr.name, ".");
++        iappend(home_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(root_inode_no);
++        strcpy(dr.name, "..");
++        iappend(home_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(home_inode_no);
++        strcpy(dr.name, "home");
++        iappend(root_inode_no, &dr, sizeof(dr));
++
++	// for root user root directory i.e. /root
++        super_user_inode_no = ialloc(T_DIR, DEFAULT_MODE);
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(super_user_inode_no);
++        strcpy(dr.name, ".");
++        iappend(super_user_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(home_inode_no);
++        strcpy(dr.name, "..");
++        iappend(super_user_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(super_user_inode_no);
++        strcpy(dr.name, "root");
++        iappend(home_inode_no, &dr, sizeof(dr));
++
++	// for etc directory i.e. /etc
++        etc_inode_no = ialloc(T_DIR, DEFAULT_MODE);
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(etc_inode_no);
++        strcpy(dr.name, ".");
++        iappend(etc_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(root_inode_no);
++        strcpy(dr.name, "..");
++        iappend(etc_inode_no, &dr, sizeof(dr));
++
++        bzero(&dr, sizeof(dr));
++        dr.inum = xshort(etc_inode_no);
++        strcpy(dr.name, "etc");
++        iappend(root_inode_no, &dr, sizeof(dr));
++}
+ 
+-  balloc(freeblock);
+ 
++int
++main(int argc, char *argv[])
++{
++  int i, cc, fd;
++  uint dir_inode_no, inum;
++  struct dirent de;
++  char buf[BSIZE];
++  char * short_name;
++
++
++  static_assert(sizeof(int) == 4, "Integers must be 4 bytes!");
++
++  if(argc < 2){
++    fprintf(stderr, "Usage: mkfs fs.img files...\n");
++    exit(1);
++  }
++
++  assert((BSIZE % sizeof(struct dinode)) == 0);
++  assert((BSIZE % sizeof(struct dirent)) == 0);	
++
++  // read & write permissions
++  fsfd = open(argv[1], O_RDWR|O_CREAT|O_TRUNC, 0666);
++  if(fsfd < 0){
++    perror(argv[1]);
++    exit(1);
++  }
++
++  // 1 fs block = 1 disk sector
++  nmeta = 2 + nlog + ninodeblocks + nbitmap;
++  nblocks = FSSIZE - nmeta;
++
++  sb.size = xint(FSSIZE);
++  sb.nblocks = xint(nblocks);
++  sb.ninodes = xint(NINODES);
++  sb.nlog = xint(nlog);
++  sb.logstart = xint(2);
++  sb.inodestart = xint(2+nlog);
++  sb.bmapstart = xint(2+nlog+ninodeblocks);
++
++  printf("nmeta %d (boot, super, log blocks %u inode blocks %u, bitmap blocks %u) blocks %d total %d\n",
++         nmeta, nlog, ninodeblocks, nbitmap, nblocks, FSSIZE);
++
++  freeblock = nmeta;     // the first free block that we can allocate
++
++  for(i = 0; i < FSSIZE; i++)
++    wsect(i, zeroes);
++
++  memset(buf, 0, sizeof(buf));
++  memmove(buf, &sb, sizeof(sb));
++  wsect(1, buf);
++
++  make_directories();
++  
++  for(i = 2; i < argc; i++){
++	// skipping 'user'
++	if(strncmp(argv[i], "user/", 5) == 0) 
++		short_name = argv[i] + 5;
++	else
++		short_name = argv[i];
++
++    assert(index(argv[i], '/') == 0);
++
++    if((fd = open(argv[i], 0)) < 0){
++      perror(argv[i]);
++      exit(1);
++    }
++
++    // Skip leading _ in name when writing to file system.
++    // The binaries are named _rm, _cat, etc. to keep the
++    // build operating system from trying to execute them
++    // in place of system binaries like rm and cat.
++    if(short_name[0] == '_'){
++	// all binaries get copied to /bin & other to /home
++    	short_name = short_name + 1;
++	dir_inode_no = bin_inode_no;
++    }
++    else if(strncmp(argv[i], "passwd", 6) == 0){
++    	dir_inode_no = etc_inode_no;
++    }
++
++    inum = ialloc(T_FILE, dir_inode_no == etc_inode_no ? 0644: DEFAULT_MODE);
++    //inum = ialloc(T_FILE,DEFAULT_MODE);
++    bzero(&de, sizeof(de));
++    de.inum = xshort(inum);
++    strncpy(de.name, short_name, DIRSIZ);
++    iappend(dir_inode_no, &de, sizeof(de));
++
++    while((cc = read(fd, buf, sizeof(buf))) > 0)
++      iappend(inum, buf, cc);
++
++    close(fd);
++  }
++
++  balloc(freeblock);
+   exit(0);
+ }
+ 
+@@ -221,7 +696,7 @@ rsect(uint sec, void *buf)
+ }
+ 
+ uint
+-ialloc(ushort type)
++ialloc(ushort type, uint mode)
+ {
+   uint inum = freeinode++;
+   struct dinode din;
+@@ -230,6 +705,8 @@ ialloc(ushort type)
+   din.type = xshort(type);
+   din.nlink = xshort(1);
+   din.size = xint(0);
++  din.uid = xint(0); // To allocate a new inode (for example, when creating a file), xv6 calls ialloc
++  din.mode = xint(mode);
+   winode(inum, &din);
+   return inum;
+ }
+@@ -294,4 +771,4 @@ iappend(uint inum, void *xp, int n)
+   }
+   din.size = xint(off);
+   winode(inum, &din);
+-}
++}*/
+diff --git a/null.c b/null.c
+new file mode 100644
+index 0000000..76f7084
+--- /dev/null
++++ b/null.c
+@@ -0,0 +1,29 @@
++#include "types.h"
++#include "defs.h"
++#include "param.h"
++#include "traps.h"
++#include "spinlock.h"
++#include "sleeplock.h"
++#include "fs.h"
++#include "file.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "proc.h"
++#include "x86.h"
++
++int dev_null_read(struct inode *ip, char *dst, int n)
++{
++  // Cannot read from /dev/null
++  return 0;
++}
++
++int dev_null_write(struct inode *ip, char *buf, int n)
++{
++  return n;
++}
++
++void dev_null_init(void)
++{
++  devsw[DEV_NULL].write = dev_null_write;
++  devsw[DEV_NULL].read = dev_null_read;
++}
+diff --git a/passwd b/passwd
+new file mode 100644
+index 0000000..6ae81d9
+--- /dev/null
++++ b/passwd
+@@ -0,0 +1 @@
++root:password:0:0:Superuser:/
+diff --git a/permissions.c b/permissions.c
+new file mode 100644
+index 0000000..5e5da39
+--- /dev/null
++++ b/permissions.c
+@@ -0,0 +1,36 @@
++#include "types.h"
++#include "stat.h"
++#include "fcntl.h"
++#include "user.h"
++#include "username.h"
++
++void getPermissions(int permisions, short type, char* ArrayPermissions)
++{
++	if(type==T_DIR)
++		strcpy(ArrayPermissions, "d");
++	else
++		strcpy(ArrayPermissions, "-");
++	for(int i=2;i>=0;i--) {
++		int bitMask=7 << i*3;
++		int bitGroup=bitMask & permisions;
++		bitGroup=bitGroup >> i*3;
++
++		if(bitGroup & READ)
++			strcat(ArrayPermissions, "r");
++		else
++			strcat(ArrayPermissions, "-");
++
++		if(bitGroup & WRITE)
++			strcat(ArrayPermissions, "w");
++		else
++			strcat(ArrayPermissions, "-");
++		if(bitGroup & EXECUTE)
++			strcat(ArrayPermissions, "x");
++		else if(bitGroup & SETUID)
++			strcat(ArrayPermissions, "s");
++		else
++			strcat(ArrayPermissions, "-");	
++	}
++
++	ArrayPermissions[10]='\0';
++}
+diff --git a/proc.c b/proc.c
+index 806b1b1..86fb3a2 100644
+--- a/proc.c
++++ b/proc.c
+@@ -138,9 +138,10 @@ userinit(void)
+   p->tf->eflags = FL_IF;
+   p->tf->esp = PGSIZE;
+   p->tf->eip = 0;  // beginning of initcode.S
+-
++  p->uid = ROOT;
++  p->euid = ROOT;
+   safestrcpy(p->name, "initcode", sizeof(p->name));
+-  p->cwd = namei("/");
++  p->cwd = namei("/",0);
+ 
+   // this assignment to p->state lets other cores
+   // run this process. the acquire forces the above
+@@ -196,10 +197,11 @@ fork(void)
+     np->state = UNUSED;
+     return -1;
+   }
++  np->uid = curproc->uid;
++  np->euid = curproc->euid;
+   np->sz = curproc->sz;
+   np->parent = curproc;
+   *np->tf = *curproc->tf;
+-
+   // Clear %eax so that fork returns 0 in the child.
+   np->tf->eax = 0;
+ 
+@@ -523,7 +525,7 @@ procdump(void)
+       state = states[p->state];
+     else
+       state = "???";
+-    cprintf("%d %s %s", p->pid, state, p->name);
++    cprintf("%d %d %d %s %s", p->pid, p->uid, p->euid, state, p->name);
+     if(p->state == SLEEPING){
+       getcallerpcs((uint*)p->context->ebp+2, pc);
+       for(i=0; i<10 && pc[i] != 0; i++)
+diff --git a/proc.h b/proc.h
+index 1647114..d7339a4 100644
+--- a/proc.h
++++ b/proc.h
+@@ -49,6 +49,8 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  int uid;
++  int euid;
+ };
+ 
+ // Process memory is laid out contiguously, low addresses first:
+diff --git a/pwd.c b/pwd.c
+new file mode 100644
+index 0000000..1dc1aeb
+--- /dev/null
++++ b/pwd.c
+@@ -0,0 +1,75 @@
++#include "types.h"
++#include "fcntl.h"
++#include "fs.h"
++#include "stat.h"
++#include "user.h"
++
++#define SLASH_SEP "/"
++#define NA   ((void*)0)
++
++static int lookupdir(int fp, int ino, char* str) {
++  struct dirent de;
++  while (read(fp, &de, sizeof(de)) == sizeof(de)) {
++    if (de.inum == 0)
++      continue;
++    if (de.inum == ino) {
++      memmove(str, de.name, DIRSIZ);
++      str[DIRSIZ] = '\0';
++      return 1;
++    }
++  }
++  return 0;
++}
++
++static char* trackpath(int ino, char* prevPath, char* Pathres) {
++  strcpy(prevPath + strlen(prevPath), SLASH_SEP "..");
++  struct stat st_var;
++  if (stat(prevPath, &st_var) < 0)
++    return NA;
++
++  if (st_var.ino == ino) {
++    return Pathres;
++  }
++
++  char* found = NA;
++  int fp = open(prevPath, O_RDONLY);
++  if (fp >= 0) {
++    char* ptr = trackpath(st_var.ino, prevPath, Pathres);
++    if (ptr != NA) {
++      strcpy(ptr, SLASH_SEP);
++      ptr += sizeof(SLASH_SEP) - 1;
++
++      if (lookupdir(fp, ino, ptr))
++        found = ptr + strlen(ptr);
++    }
++    close(fp);
++  }
++  return found;
++}
++
++static int findpath(char* Pathres) {
++  Pathres[0] = '\0';
++
++  char prevPath[512];
++  strcpy(prevPath, ".");
++
++  struct stat st_var;
++  if (stat(prevPath, &st_var) < 0)
++    return 0;
++
++  char* ptr = trackpath(st_var.ino, prevPath, Pathres);
++  if (ptr == NA)
++    return 0;
++  if (Pathres[0] == '\0')
++    strcpy(Pathres, SLASH_SEP);
++  return 1;
++}
++
++int main(int argc, char *argv[]) {
++  char Pathres[512];
++  if (findpath(Pathres))
++    printf(1, "%s\n", Pathres);
++  else
++    printf(2, "pwd not working");
++  exit();
++}
+diff --git a/sh.c b/sh.c
+index 054bab9..02ba733 100644
+--- a/sh.c
++++ b/sh.c
+@@ -55,7 +55,7 @@ struct cmd *parsecmd(char*);
+ 
+ // Execute cmd.  Never returns.
+ void
+-runcmd(struct cmd *cmd)
++runcmd(struct cmd *cmd, int uid)  // Adding uid from parent to child
+ {
+   int p[2];
+   struct backcmd *bcmd;
+@@ -75,6 +75,7 @@ runcmd(struct cmd *cmd)
+     ecmd = (struct execcmd*)cmd;
+     if(ecmd->argv[0] == 0)
+       exit();
++    setuid(uid);
+     exec(ecmd->argv[0], ecmd->argv);
+     printf(2, "exec %s failed\n", ecmd->argv[0]);
+     break;
+@@ -86,15 +87,15 @@ runcmd(struct cmd *cmd)
+       printf(2, "open %s failed\n", rcmd->file);
+       exit();
+     }
+-    runcmd(rcmd->cmd);
++    runcmd(rcmd->cmd, uid);
+     break;
+ 
+   case LIST:
+     lcmd = (struct listcmd*)cmd;
+     if(fork1() == 0)
+-      runcmd(lcmd->left);
++      runcmd(lcmd->left, uid);
+     wait();
+-    runcmd(lcmd->right);
++    runcmd(lcmd->right, uid);
+     break;
+ 
+   case PIPE:
+@@ -106,14 +107,14 @@ runcmd(struct cmd *cmd)
+       dup(p[1]);
+       close(p[0]);
+       close(p[1]);
+-      runcmd(pcmd->left);
++      runcmd(pcmd->left, uid);
+     }
+     if(fork1() == 0){
+       close(0);
+       dup(p[0]);
+       close(p[0]);
+       close(p[1]);
+-      runcmd(pcmd->right);
++      runcmd(pcmd->right, uid);
+     }
+     close(p[0]);
+     close(p[1]);
+@@ -124,7 +125,7 @@ runcmd(struct cmd *cmd)
+   case BACK:
+     bcmd = (struct backcmd*)cmd;
+     if(fork1() == 0)
+-      runcmd(bcmd->cmd);
++      runcmd(bcmd->cmd, uid);
+     break;
+   }
+   exit();
+@@ -164,8 +165,9 @@ main(void)
+         printf(2, "cannot cd %s\n", buf+3);
+       continue;
+     }
++    int uid = getuid();
+     if(fork1() == 0)
+-      runcmd(parsecmd(buf));
++      runcmd(parsecmd(buf), uid);
+     wait();
+   }
+   exit();
+diff --git a/stat.h b/stat.h
+index 8a80933..3a424fc 100644
+--- a/stat.h
++++ b/stat.h
+@@ -1,11 +1,14 @@
+ #define T_DIR  1   // Directory
+ #define T_FILE 2   // File
+ #define T_DEV  3   // Device
+-
++//#define T_SYMLINK 4 //soft link
+ struct stat {
+   short type;  // Type of file
+   int dev;     // File system's disk device
+   uint ino;    // Inode number
+   short nlink; // Number of links to file
+   uint size;   // Size of file in bytes
++  uint uid;	 // User id
++  uint gid;	 // Group id
++  uint mode;	 // Read, write, execute
+ };
+diff --git a/su.c b/su.c
+new file mode 100644
+index 0000000..ea33966
+--- /dev/null
++++ b/su.c
+@@ -0,0 +1,69 @@
++#include "types.h"
++#include "user.h"
++#include "fcntl.h"
++#include "stat.h"
++#include "username.h"
++
++int main(int argc, char *argv[]) {
++    int uid = getuid();
++    char *newuser = NA;
++    char *password = NA;
++
++    if (argc == 1) {
++        // If no arguments are provided, default switching to root
++        newuser = "root";
++    } else if (argc == 2) {
++        // If one argument is provided, use it as the new user
++        newuser = argv[1];
++    } else {
++        // If more than one argument is provided, print an error message and exit
++        printf(1,"Usage: su [user]\n");
++        exit();
++    }
++
++    if (uid == 0 && strcmp(newuser, "root") == 0) {
++        // If the current user is already root and the new user is also root, print an error message and exit
++        printf(1,"You are already logged in as root\n");
++        exit();
++    } else {
++        // If the current user is not root or the new user is not root, prompt for the new user's password
++        printf(1,"Password: ");
++        int n = read(0, password, 1024);
++        if (n < 0) {
++            // If there was an error reading the input, print an error message and exit
++            printf(2,"Error reading password\n");
++            exit();
++        } else {
++            // Remove the newline character from the end of the password string
++            password[n - 1] = '\0';
++
++            // Check the new user's password against the password entry in the password file
++            struct user* user1 =checkUser(newuser, password);
++            if (user1 == NA) {
++                // If the new user's password entry could not be found, print an error message and exit
++                printf(2,"Unable to find password entry for %s\n", newuser);
++                exit();
++            } else if (strcmp(password, user1->pass) != 0) {
++                // If the password is incorrect, print an error message and exit
++                printf(2,"Incorrect password\n");
++                exit();
++            } else {
++                // If the password is correct, switch to the new user and start a new shell
++                setuid(user1->uid);
++                //seteuid(new_pwd->pw_uid);
++                char *new_argv[] = {"sh", 0};
++                exec(new_argv[0], new_argv);
++
++                // If there was an error starting the new shell, print an error message and exit
++                printf(2,"Error starting new shell\n");
++                exit();
++            }
++        }
++    }
++
++    // Free allocated memory
++    if (password != NA) {
++        free(password);
++    }
++    exit();
++}
+diff --git a/syscall.c b/syscall.c
+index ee85261..90fc12d 100644
+--- a/syscall.c
++++ b/syscall.c
+@@ -103,6 +103,14 @@ extern int sys_unlink(void);
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_getuid(void);
++extern int sys_setuid(void);
++extern int sys_findsize(void);
++extern int sys_symlink(void);
++extern int sys_geteuid(void);
++extern int sys_seteuid(void);
++extern int sys_chmod(void);
++extern int sys_chown(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +134,14 @@ static int (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_getuid]   sys_getuid,
++[SYS_setuid]   sys_setuid,
++[SYS_findsize]   sys_findsize,
++[SYS_symlink] sys_symlink,
++[SYS_geteuid]   sys_geteuid,
++[SYS_seteuid]   sys_seteuid,
++[SYS_chmod]     sys_chmod,
++[SYS_chown]      sys_chown,
+ };
+ 
+ void
+diff --git a/syscall.h b/syscall.h
+index bc5f356..d1c6c80 100644
+--- a/syscall.h
++++ b/syscall.h
+@@ -20,3 +20,11 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_getuid 22
++#define SYS_setuid 23
++#define SYS_findsize 24
++#define SYS_symlink 25
++#define SYS_geteuid 26
++#define SYS_seteuid 27
++#define SYS_chmod 28
++#define SYS_chown 29
+diff --git a/sysfile.c b/sysfile.c
+index bfe61b7..3a8e64a 100644
+--- a/sysfile.c
++++ b/sysfile.c
+@@ -3,7 +3,7 @@
+ // Mostly argument checking, since we don't trust
+ // user code, and calls into file.c and fs.c.
+ //
+-
++#define O_NO_DEREF  0x004
+ #include "types.h"
+ #include "defs.h"
+ #include "param.h"
+@@ -15,9 +15,11 @@
+ #include "sleeplock.h"
+ #include "file.h"
+ #include "fcntl.h"
++#include "x86.h"
+ 
+ // Fetch the nth word-sized system call argument as a file descriptor
+ // and return both the descriptor and the corresponding struct file.
++extern int check;
+ static int
+ argfd(int n, int *pfd, struct file **pf)
+ {
+@@ -34,7 +36,31 @@ argfd(int n, int *pfd, struct file **pf)
+     *pf = f;
+   return 0;
+ }
+-
++int validateWrite(char* path)
++{
++	int currUser=myproc()->uid;
++	char s[20];
++	struct inode* iParent=nameiparent(path, s);
++
++	if(!strncmp(s,"passwd", 6))						// replacment for setuid bit
++		return 1;
++	if(!strncmp(s,"group", 5))
++		return 1;
++
++	ilock(iParent);
++	int uidParent=iParent->uid;
++	int modeParent=iParent->mode;
++	iunlock(iParent);
++	int userWrite=WRITE << 6;						// does owner have access?
++		if((modeParent & userWrite) && (uidParent == currUser))
++			return 1;
++
++	int otherWrite=WRITE;							// do other members have access?
++		if(modeParent & otherWrite)
++			return 1;
++
++	return -1;
++}
+ // Allocate a file descriptor for the given file.
+ // Takes over file reference from caller on success.
+ static int
+@@ -111,7 +137,32 @@ sys_fstat(void)
+ 
+   if(argfd(0, 0, &f) < 0 || argptr(1, (void*)&st, sizeof(*st)) < 0)
+     return -1;
+-  return filestat(f, st);
++  if(f->ip->type == T_SYMLINK) {
++    struct inode *resolved_ip;
++    char buf[100];
++
++    ilock(f->ip);
++    //readsymlink(f->ip, buf, sizeof(buf));
++    iunlock(f->ip);
++
++    begin_op();
++    //resolved_ip = 0;
++    resolved_ip = namei(buf,1);
++    if(resolved_ip == 0) {
++      end_op();
++      return -1;
++    }
++    ilock(resolved_ip);
++    stati(resolved_ip, st);
++    iunlockput(resolved_ip);
++    end_op();
++  } else {
++    ilock(f->ip);
++    stati(f->ip, st);
++    iunlock(f->ip);
++  }
++  //return filestat(f, st);
++  return 0;
+ }
+ 
+ // Create the path new as a link to the same inode as old.
+@@ -120,16 +171,15 @@ sys_link(void)
+ {
+   char name[DIRSIZ], *new, *old;
+   struct inode *dp, *ip;
+-
++ // ip=0;
+   if(argstr(0, &old) < 0 || argstr(1, &new) < 0)
+     return -1;
+ 
+   begin_op();
+-  if((ip = namei(old)) == 0){
++  if((ip = namei(old,1)) == 0){
+     end_op();
+     return -1;
+   }
+-
+   ilock(ip);
+   if(ip->type == T_DIR){
+     iunlockput(ip);
+@@ -210,6 +260,9 @@ sys_unlink(void)
+ 
+   if(ip->nlink < 1)
+     panic("unlink: nlink < 1");
++    	if(ip->type == T_SYMLINK) {
++    	goto remove_link;
++    }
+   if(ip->type == T_DIR && !isdirempty(ip)){
+     iunlockput(ip);
+     goto bad;
+@@ -223,7 +276,7 @@ sys_unlink(void)
+     iupdate(dp);
+   }
+   iunlockput(dp);
+-
++  remove_link:
+   ip->nlink--;
+   iupdate(ip);
+   iunlockput(ip);
+@@ -243,7 +296,10 @@ create(char *path, short type, short major, short minor)
+ {
+   struct inode *ip, *dp;
+   char name[DIRSIZ];
+-
++  int currUser=myproc()->uid;
++  if(currUser!=ROOT)					// if user isn't root, validate permisions
++	if(validateWrite(path)<0)
++		return 0;
+   if((dp = nameiparent(path, name)) == 0)
+     return 0;
+   ilock(dp);
+@@ -264,6 +320,7 @@ create(char *path, short type, short major, short minor)
+   ip->major = major;
+   ip->minor = minor;
+   ip->nlink = 1;
++  ip->mode = 0644;
+   iupdate(ip);
+ 
+   if(type == T_DIR){  // Create . and .. entries.
+@@ -281,18 +338,56 @@ create(char *path, short type, short major, short minor)
+ 
+   return ip;
+ }
++int validateRead(char* path)
++{
++	int currUser=myproc()->uid;
++	char s[20];
++	struct inode* iParent=nameiparent(path, s);
++
++	if(!strncmp(s,"passwd", 6))						// replacment for setuid bit
++		return 1;
++	if(!strncmp(s,"group", 5))
++		return 1;
++
++	ilock(iParent);
++	int uidParent=iParent->uid;
++	int modeParent=iParent->mode;
++	iunlock(iParent);
++	int userRead=READ << 6;							// does owner have access?
++	if((modeParent & userRead) && (uidParent == currUser))
++		return 1;
++
++	int otherRead=READ;								// do other members have access?
++	if(modeParent & otherRead)
++		return 1;
++
++	return -1;
++}
+ 
+ int
+ sys_open(void)
+ {
++ 
+   char *path;
+   int fd, omode;
+   struct file *f;
+   struct inode *ip;
+-
++  char buf[100];
+   if(argstr(0, &path) < 0 || argint(1, &omode) < 0)
+     return -1;
+-
++  int currUser=myproc()->uid;
++	if(currUser!=ROOT) {					// if user isn't root, validate permisions
++		if(omode==O_RDONLY || omode==O_RDWR) {
++			if(validateRead(path)<0)
++				return -1;
++		}
++
++		if(omode==O_WRONLY || omode==O_RDWR || omode==O_CREATE) {
++			if(validateWrite(path)<0)
++				return -1;
++		}
++
++	}
+   begin_op();
+ 
+   if(omode & O_CREATE){
+@@ -302,16 +397,42 @@ sys_open(void)
+       return -1;
+     }
+   } else {
+-    if((ip = namei(path)) == 0){
++    if((ip = namei(path,1)) == 0){
+       end_op();
+       return -1;
+     }
+     ilock(ip);
+     if(ip->type == T_DIR && omode != O_RDONLY){
++      if(omode & O_NO_DEREF){
++        goto noderef;
++      }
+       iunlockput(ip);
+       end_op();
+       return -1;
+     }
++    noderef:
++    if(ip->type == T_SYMLINK && (omode & O_NO_DEREF)==0 )
++    {
++      iunlock(ip);
++      int res = readsymlink(path, buf, 100);
++      if(res < 0) {
++        end_op();
++        return -1;
++      }
++      ip = 0;
++      ip = namei(buf,1);
++      if (ip == 0) {
++         end_op();
++        return -1;
++      }
++      ilock(ip);
++    }
++    if(ip->type == T_SYMLINK && (omode & O_NO_DEREF))
++    {
++      iunlock(ip);
++      ip = namei(path,0);
++      ilock(ip);
++    }
+   }
+ 
+   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+@@ -329,7 +450,9 @@ sys_open(void)
+   f->off = 0;
+   f->readable = !(omode & O_WRONLY);
+   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
++  
+   return fd;
++  //return 1;
+ }
+ 
+ int
+@@ -367,6 +490,23 @@ sys_mknod(void)
+   end_op();
+   return 0;
+ }
++int ExecuteValidation(struct inode* n)
++{
++  int user1=myproc()->uid;
++  ilock(n);
++  int inode_uid=n->uid;
++  int inode_mode=n->mode;
++  iunlock(n);
++  int Execute_User=EXECUTE << 6;						// does owner have access?
++  if((inode_mode & Execute_User) && (inode_uid == user1))
++	return 1;
++
++  int others=EXECUTE;							// do other members have access?
++  if(inode_mode & others)
++	return 1;
++
++  return -1;
++ }
+ 
+ int
+ sys_chdir(void)
+@@ -374,12 +514,33 @@ sys_chdir(void)
+   char *path;
+   struct inode *ip;
+   struct proc *curproc = myproc();
+-  
++  //ip=0;
++  char path_name[40];
+   begin_op();
+-  if(argstr(0, &path) < 0 || (ip = namei(path)) == 0){
++  if(argstr(0, &path) < 0 || (ip = namei(path,1)) == 0){
++    end_op();
++    return -1;
++  }
++  
++  if(readsymlink(path, path_name, 40) == 0) 
++  {
++    if((ip = namei(path_name,1)) == 0) 
++    {
++      end_op();
++      return -1;
++    }
++  }
++  else if((ip = namei(path,1) )== 0) 
++  {
+     end_op();
+     return -1;
+   }
++  int user1=myproc()->uid;
++  if(user1!=ROOT)
++    if(ExecuteValidation(ip)<0) {
++	end_op();
++	return -1;
++    }
+   ilock(ip);
+   if(ip->type != T_DIR){
+     iunlockput(ip);
+@@ -442,3 +603,133 @@ sys_pipe(void)
+   fd[1] = fd1;
+   return 0;
+ }
++
++int sys_findsize()
++{
++  struct file *fptr;
++  if(argfd(0,0,&fptr) < 0)
++    return -1;
++  return fptr->ip->size;
++}
++
++int
++createsymlink(const char* old, const char* new)
++{
++  struct file *ptr;
++  struct inode *ip;
++  begin_op();
++  if((ip = create((char*)new,T_SYMLINK,0,0))==0){
++  	end_op();
++  	return -1;
++  }
++  end_op();
++  if((ptr = filealloc())==0){
++  	if(ptr){
++  		fileclose(ptr);
++  	}
++  	iunlockput(ip);
++  	return -1;
++  }
++  if(strlen(old)>40){
++  	panic("soft link: Path of new link is too long");
++  }
++  safestrcpy((char*)ip->addrs,old,40);
++  iunlock(ip);
++  
++  ptr->ip = ip;
++  ptr->off = 0;
++  ptr->readable = 1;
++  ptr->writable = 0;
++  return 0;
++}
++
++int readsymlink(const char* path, char* string, int size){
++	if(strlen(path)>size){
++		return -1;
++	}
++	struct inode *ip;
++	if((ip = namei((char*)path,1))==0){
++		return -1;
++	}
++	ilock(ip);
++	if(ip->type != T_SYMLINK){
++		iunlock(ip);
++		return -1;
++	}
++	char tmp[40];
++	safestrcpy(tmp,(char*)ip->addrs,40);
++	struct inode *move;
++	if((move = namei((char*)tmp,1)) > 0){
++		if(move->type!=T_SYMLINK){
++			safestrcpy(string,(char*)ip->addrs,size);
++			iunlock(ip);
++			return 0;
++		}
++		else{
++			iunlock(ip);
++			return readsymlink(tmp,string,size);
++		}
++	}
++	else{
++		iunlock(ip);
++		return -1;
++	}
++	return 0;
++}
++
++int
++sys_chmod(void){
++    char *path;
++    int mode;
++    struct inode *ip;
++
++    if(argstr(0,&path)<0 || argint(1,&mode)<0){
++        return -1;
++    }
++
++    begin_op();
++
++    if((ip=namei(path,0))==0){
++        end_op();
++        return -1;
++    }
++
++    if(ip->uid != myproc()->uid && myproc()->uid !=0){
++        end_op();
++        return -1;
++    }
++
++    ilock(ip);
++    ip->mode =mode;
++
++    iupdate(ip);
++    iunlock(ip);
++    end_op();
++
++    return 0;
++}
++
++void changeOwnerGroup(int uid, int gid, struct inode* ip)
++{
++	ilock(ip);
++	ip->uid=uid;
++	ip->gid=gid;
++	iunlock(ip);
++}
++
++int sys_chown(void)
++{
++	char* path;
++	int uid, gid;
++
++	if(argstr(0, &path) < 0 || argint(1, &uid)<0 || argint(2, &gid)<0)
++		return -1;
++
++	struct proc* currProc=myproc();
++	struct inode* ip=namei(path,0);
++	if(currProc->uid!=ROOT)
++		return -1;
++
++	changeOwnerGroup(uid, gid, ip);
++	return 1;
++}
+diff --git a/sysproc.c b/sysproc.c
+index 0686d29..e6b6621 100644
+--- a/sysproc.c
++++ b/sysproc.c
+@@ -5,6 +5,10 @@
+ #include "param.h"
+ #include "memlayout.h"
+ #include "mmu.h"
++#include "spinlock.h"
++#include "sleeplock.h"
++#include "fs.h"
++#include "file.h"
+ #include "proc.h"
+ 
+ int
+@@ -89,3 +93,50 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++int sys_getuid()
++{
++  return myproc()->uid;
++}
++
++int sys_setuid()
++{
++  int uid;
++  if(argint(0, &uid) < 0)
++    return -1;
++  struct proc* currProc=myproc();
++  if(currProc->uid!=ROOT)
++    return -1;
++  currProc->uid=uid;
++  currProc->euid=uid;
++  return 1;
++}
++
++int sys_geteuid() 
++{
++  return myproc()->euid;
++}
++
++int sys_seteuid()
++{
++  int euid;
++  if(argint(0, &euid) < 0)
++    return -1;
++  struct proc* currProc=myproc();
++  currProc->euid=euid;
++  return 1;
++}
++
++int
++sys_symlink(void){
++  const char *old;
++  const char *new;
++  if(argptr(0,(char**)&old,4) < 0){
++    return -1;
++  }
++  if(argptr(1,(char**)&new,4)<0){
++    return -1;
++  }
++  cprintf("Symlink created");
++  return createsymlink(old,new);
++}
+diff --git a/tests.c b/tests.c
+new file mode 100644
+index 0000000..a1d692c
+--- /dev/null
++++ b/tests.c
+@@ -0,0 +1,256 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "proc.h"
++#include "username.h"
++
++void test_dev_null(){
++  // Open /dev/null for writing
++  int fd = open("/dev/null", O_WRONLY);
++  if (fd < 0) {
++    printf(2,"cant open file");
++    exit();
++  }
++
++  // Write some data to /dev/null
++  char buf[] = "data to discard\n";
++  if (write(fd, buf, strlen(buf)) < 0) {
++    printf(2,"cant write to file");
++    exit();
++  }
++
++  // Close /dev/null
++  if (close(fd) < 0) {
++    printf(2,"cant close file");
++    exit();
++  }
++
++  // Open /dev/null for reading
++  fd = open("/dev/null", O_RDONLY);
++  if (fd < 0) {
++    printf(2,"cant open file");
++    exit();
++  }
++
++  // Try to read some data from /dev/null (should return 0 bytes)
++  char read_buf[100];
++  int n = read(fd, read_buf, sizeof(read_buf));
++  if (n < 0) {
++    printf(2,"cant read file");
++    exit();
++  }
++  if (n > 0) {
++    printf(2, "Error: Read from /dev/null returned %d bytes\n", n);
++    exit();
++  }
++
++  // Close /dev/null
++  if (close(fd) < 0) {
++    printf(2,"cant close file");
++    exit();
++  }
++
++  printf(1,"Test passed!\n\n");
++}
++
++void test_dev_zero(){
++  // Open /dev/zero for reading
++  int fd = open("/dev/zero", O_RDONLY);
++  if (fd < 0) {
++    printf(2,"cant open file");
++    exit();
++  }
++  char read_buf[100];
++  int n = read(fd, read_buf, sizeof(read_buf));
++  if (n < 0) {
++    printf(2, "Error: Failed to read from /dev/zero\n");
++    exit();
++  }
++  for (int i = 0; i < n; i++) {
++    if (read_buf[i] != 0) {
++      printf(2,"Error: Read from /dev/zero returned non-zero bytes\n");
++      exit();
++    }
++  }
++
++  // Close /dev/zero
++  if (close(fd) < 0) {
++    printf(2,"Error: Failed to close /dev/zero\n");
++    exit();
++  }
++  printf(1,"Test passed!\n\n");
++}
++
++int system(char *cmd) {
++  int pid, status=0;
++  
++  char *token;
++  char *args[50];
++  int i = 0;
++
++  // Tokenize the cmd string and store the arguments in the args array
++  token = strtok(cmd, " ");
++  while (token != NA && i < 49) {
++    args[i++] = token;
++    token = strtok(NA, " ");
++  }
++  args[i] = 0;
++
++  if ((pid = fork()) == 0) {
++    // Child process
++    //char *pwd_args[] = {args[0], args};
++    exec(args[0], args);
++    return 1;
++  } 
++  else if (pid < 0) {
++    // Fork error
++    return -1;
++  } 
++  else {
++    // Parent process
++    while (wait() != pid);
++    return status;
++  }
++}
++
++void test_pwd(){
++  //char cwd[512];
++
++  // Get the current directory path
++  printf(1,"    Root directory :");
++  if(system("pwd")<0){
++  	printf(2, "error");
++  	exit();
++  }
++  //make a temp directory and change to that directory and then call pwd
++  if(mkdir("dir1")<0){
++	printf(2, "mkdir failed\n");
++	exit();
++  }
++  if(chdir("dir1")<0){
++    	printf(2, "chdir failed\n");
++    	exit();
++  }
++  printf(1,"    directory inside root :");
++  if(system("/pwd")<0){
++    	printf(2, "error");
++    	exit();
++  }
++  chdir("..");
++  printf(1,"    Test passed!\n\n");
++}
++
++void test_uid(){
++	int uid;
++	//setting uid to root
++	setuid(0);
++	uid = getuid();
++	if(uid!=0){
++		printf(2,"error in getting uid");
++	}
++	printf(1,"Test passed!\n\n");
++}
++
++void test_symlinks(){
++	// Test creating a hard link
++	char old_file[] = "login";
++	char new_file[] = "new";
++
++	// Create the link
++	int result = symlink(old_file, new_file);
++	if (result < 0) {
++  		printf(2, "link test failed: could not create link\n");
++  		exit();
++	}
++	printf(1,"\n    Test passed!\n\n");
++
++}
++
++void test_euid(){
++	int euid;
++	//setting uid to root
++	seteuid(0);
++	euid = geteuid();
++	if(euid!=0){
++		printf(2,"error in getting euid");
++		exit();
++	}
++	printf(1,"Test passed!\n\n");
++}
++
++void test_whoami(){
++	printf(1,"    user:");
++	if(system("whoami")<0){
++	  	printf(2, "error in whoami");
++	  	exit();
++  	}
++  	printf(1,"    Test passed!\n\n");
++}
++
++void test_id(){
++	printf(1,"    user uid,gid,group : ");
++	if(system("id")<0){
++		printf(2,"error in id");
++		exit();
++	}
++	printf(1,"    Test passed!\n\n");
++}
++
++void test_su(){
++	if(system("su shrush")<0){
++		printf(2,"error in su");
++		exit();
++	}
++	printf(1,"    Test passed!\n\n");
++	
++} 
++
++void test_adduser(){
++	if(system("adduser shrushti shrush sh hello")<0){
++		printf(2,"error in creating and adding user");
++		exit();
++	}
++	printf(1,"user added in /etc/passwd: \n");
++	if(system("cat /etc/passwd")<0){
++		printf(2,"error in opening /etc/passwd");
++		exit();
++	}
++	printf(1,"group added in /etc/group: \n");
++	if(system("cat /etc/group")<0){
++		printf(2,"error in opening /etc/group");
++		exit();
++	}
++	printf(1,"Test passed!\n\n");
++}
++
++int main(int argc, char *argv[]) {
++
++  printf(1,"Testing /dev/null :");
++  test_dev_null();
++  printf(1,"Testing /dev/zero :");
++  test_dev_zero();
++  printf(1,"Testing pwd :\n");
++  test_pwd();
++  printf(1,"Testing symlinks : ");
++  test_symlinks();
++  printf(1,"Testing uid(set and get) : ");
++  test_uid();
++  printf(1,"Testing euid(set and get) : ");
++  test_euid();
++  printf(1,"Testing adduser : \n");
++  test_adduser();
++  printf(1,"Testing id : \n");
++  test_id();
++  printf(1,"Testing whoami : \n");
++  test_whoami();
++  printf(1,"Testing su [-user]: \n");
++  test_su();
++  exit();
++}
+diff --git a/ulib.c b/ulib.c
+index 8e1e1a2..e12125c 100644
+--- a/ulib.c
++++ b/ulib.c
+@@ -3,6 +3,7 @@
+ #include "fcntl.h"
+ #include "user.h"
+ #include "x86.h"
++#include "username.h"
+ 
+ char*
+ strcpy(char *s, const char *t)
+@@ -104,3 +105,97 @@ memmove(void *vdst, const void *vsrc, int n)
+     *dst++ = *src++;
+   return vdst;
+ }
++
++char* strtok(char* string, const char* ch) {
++  static char* buf = NA;
++  int length = strlen(ch);
++  int i = 0;
++  if( !buf && string )
++      buf = string;
++  if(!buf && !string)
++      return NA;
++
++  char* counter = buf;
++  while(1) {
++      for(i = 0; i < length; i ++) {
++          if(*counter == ch[i]) {
++              counter ++;
++              break;
++          }
++      }
++
++      if(i == length) {
++             buf = counter;
++             break;
++      }
++  }
++
++  if(*buf == '\0') {
++      buf = NA;
++      return buf;
++  }
++
++  while(*buf != '\0') {
++      for(i = 0; i < length; i ++) {
++          if(*buf == ch[i]) {
++              *buf = '\0';
++              break;
++          }
++      }
++
++      buf ++;
++      if (i < length)
++         break;
++  }
++
++  return counter;
++}
++
++char* strcat(char* to, const char* from)
++{
++
++  char* str = to + strlen(to);
++  while (*from != '\0'){
++	*str++ = *from++;
++  }
++  *str = '\0';
++  return to;
++}
++
++void reverse(char *s) {
++  int i, j;
++  char temp;
++  for (i = 0, j = strlen(s) - 1; i < j; i++, j--) {
++    temp = s[i];
++    s[i] = s[j];
++    s[j] = temp;
++  }
++}
++
++void itoa(int n, char *s) {
++  int i = 0;
++  if (n == 0) {
++    s[i++] = '0';
++  } else {
++    if (n < 0) {
++      s[i++] = '-';
++      n = -n;
++    }
++    while (n != 0) {
++      int digit = n % 10;
++      s[i++] = '0' + digit;
++      n /= 10;
++    }
++  }
++  s[i] = '\0';
++  reverse(s);
++}
++
++int pow(int base, int exponent)
++{
++	int result=1;
++	for(int i=0;i<exponent;i++)
++		result*=base;
++
++	return result;
++}
+diff --git a/user.h b/user.h
+index 4f99c52..b003169 100644
+--- a/user.h
++++ b/user.h
+@@ -23,6 +23,15 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int getuid();
++void setuid(int);
++void passEcho();
++int findsize(int);
++int geteuid();
++void seteuid(int);
++int symlink(const char*,const char*);
++int chmod(const char*, int);
++int chown(const char*, int, int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+@@ -37,3 +46,10 @@ void* memset(void*, int, uint);
+ void* malloc(uint);
+ void free(void*);
+ int atoi(const char*);
++char* strtok(char*, const char*);
++char* strcat(char*, const char*);
++void itoa(int n, char *s);
++char* strstr(char *str, char *substr);
++int pow(int, int);
++
++//more functions
+diff --git a/username.c b/username.c
+new file mode 100644
+index 0000000..9d08312
+--- /dev/null
++++ b/username.c
+@@ -0,0 +1,409 @@
++#include "types.h"
++#include "stat.h"
++#include "fcntl.h"
++#include "user.h"
++#include "username.h"
++//#include "grpname.h"
++
++#define READ 		4
++#define WRITE 		2
++#define EXECUTE 	1
++
++struct user* StringUser(char* str){
++  struct user* user1=(struct user*)malloc(sizeof(struct user));
++  int m=0, c;
++  char usertmp[6][50];
++  char buf[50];
++  for(int i=0;i<6;i++) {
++     c=0;
++     while(str[c+m]!=':' && str[c+m]!='\0') {
++        buf[c]=str[c+m];
++        c++;
++     }
++     buf[c]='\0';
++     strcpy(usertmp[i],buf);
++     m=m+c+1;
++  }
++  strcpy(user1->homedir,usertmp[5]);
++  strcpy(user1->originalname,usertmp[4]);
++  user1->gid=atoi(usertmp[3]);
++  user1->uid=atoi(usertmp[2]);
++  strcpy(user1->pass,usertmp[1]);
++  strcpy(user1->user,usertmp[0]);
++  user1->next=NA;
++  return user1;
++}
++
++void UserToString(struct user* currUser, char* userString)
++{
++   strcpy(userString, currUser->user);
++   strcat(userString, ":");
++   
++   strcat(userString, currUser->pass);
++   strcat(userString, ":");
++   
++   char uidString[50];
++   itoa(currUser->uid, uidString);
++   strcat(userString, uidString);
++   strcat(userString, ":");
++   
++   char gidString[50];
++   itoa(currUser->gid, gidString);
++   strcat(userString, gidString);
++   strcat(userString, ":");
++   
++   strcat(userString, currUser->originalname);
++   strcat(userString, ":");
++   
++   strcat(userString, currUser->homedir);
++   strcat(userString, "\n");
++}
++
++struct user* createUser(char* originalname, char* username, char* homedir, char* password)
++{
++   struct user* newUser=(struct user*)malloc(sizeof(struct user));
++
++	 int uid=getNextAvailableUid();                     // else get available uid that is greater than 1000
++	 newUser->uid=uid;
++
++   int gid=getNextAvailableGid();
++   newUser->gid=gid;
++
++   strcpy(newUser->homedir, "/home/");                    // all users are stored in "/home/"
++   if(!(homedir[0]==0)){
++      strcat(newUser->homedir, homedir);
++    }
++   else
++      strcat(newUser->homedir, username);
++
++   int valid=mkdir(newUser->homedir);
++   if(valid==-1)                                          // if dir isn't created, return error
++      return NA;
++   strcpy(newUser->pass, password);
++   strcpy(newUser->originalname, originalname);
++   strcpy(newUser->user, username);
++   return newUser;
++}
++
++int getNextAvailableUid() 
++{
++   struct user* userList=SearchIfValid();
++   int uid=1;
++
++   struct user* tmpUser=userList;
++   while(tmpUser!=NA) {
++      if(tmpUser->uid==uid)
++         uid++;
++
++      tmpUser=tmpUser->next;
++   }
++   struct user* tempUser;
++   while(userList!=NA) {
++      tempUser=userList;
++      userList=userList->next;
++      free(tempUser);
++   }
++   return uid;
++}
++
++int getNextAvailableGid() 
++{
++   struct user* userList=SearchIfValid();
++   int gid=1;
++
++   struct user* tmpUser=userList;
++   while(tmpUser!=NA) {
++      if(tmpUser->gid==gid)
++         gid++;
++
++      tmpUser=tmpUser->next;
++   }
++   struct user* tempUser;
++   while(userList!=NA) {
++      tempUser=userList;
++      userList=userList->next;
++      free(tempUser);
++   }
++   return gid;
++}
++
++void addNewUser(struct user* newUser)
++{
++   struct user* userList=SearchIfValid();
++   userList=addingUser(userList, newUser);
++   updatePasswdFile(userList);
++   removeUser(userList);
++   //exit();
++}
++
++void updatePasswdFile(struct user* userList)
++{
++   struct user* newUser=NA;
++   int fd=open("/etc/passwd",O_WRONLY | O_CREATE);
++   while(userList!=NA) {
++      char userString[50*4];
++      UserToString(userList, userString);
++      write(fd, userString, strlen(userString));
++      newUser=userList;
++      userList=userList->next;
++   }
++   close(fd);
++   struct group* newGroup=createGroup(newUser->user, "NULL" , 1);
++   if(newGroup==NA) {
++	  printf(1,"Error while creating group!\n");
++	  exit();
++   }
++   else{
++   	  addNewGroup(newGroup);
++   }
++   //return;
++   //close(fd);
++   //exit();
++}
++
++int Usercmp(struct user* x, struct user* y)
++{
++   if(x->uid<y->uid) {
++	return -1;
++   }
++   if(x->uid>y->uid) {
++	return 1;
++   }
++   return 0;
++}
++
++struct user* addingUser(struct user* list, struct user* user1)
++{
++   struct user* temp=list;
++   if(!user1)
++      return list;
++
++   if(!list){
++      //printf(1,"%s",user1->user);
++      return user1;}
++
++   if(Usercmp(list, user1)>0) {
++      user1->next=list;
++      return user1;
++   }
++   while( (Usercmp(temp->next, user1)<=0) && (temp->next))
++      temp=temp->next;
++
++   user1->next=temp->next;
++   temp->next=user1;
++   return list;
++}
++
++struct user* SearchIfValid()
++{
++   struct user* x=NA;
++   int fd;
++   fd=open("/etc/passwd",O_RDONLY);
++   if(fd<0) printf(1,"cant open file");
++   //else printf(1,"opened file");
++   int sz=findsize(fd);
++   char contents[sz];
++   read(fd,contents,sz);
++
++   char* temp = strtok(contents, "\n");
++   while( temp != NA) {
++      struct user* user1=StringUser(temp);
++      //printf(1,"%s",user1->user);
++      x=addingUser(x, user1);
++      //printf(1,"%s",user1->user);
++      temp = strtok(NA, "\n");
++   }
++   close(fd);
++   return x;
++}
++
++int checkCurrValues(struct user* user1,char* user, char* pass)
++{
++   if(strcmp(user,user1->user)==0 && strcmp(pass,user1->pass)==0){
++      return 1;
++   }
++   return 0;
++}
++
++void removeUser(struct user* list)
++{
++   struct user* temp;
++   while(list) {
++      temp=list;
++      list=list->next;
++      free(temp);
++   }
++}
++
++struct user* checkUser(char* username, char* pass)
++{
++   struct user* x=SearchIfValid();
++   struct user* tmp=x;
++   int v;
++   //printf(1,"%d",tmp->uid);
++   while(tmp!=NA) {
++      v=checkCurrValues(tmp, username, pass);
++      if(v)
++         return tmp;
++
++      tmp=tmp->next;
++   }
++
++   removeUser(x);
++   return NA;
++}
++
++struct user* getUserFromUid(int uid)
++{
++   struct user* userList=SearchIfValid();
++
++   struct user* tmpUser=userList;
++   while(tmpUser!=NA) {
++      if(uid==tmpUser->uid) {
++         tmpUser->next=NA;             // return only this user, not the whole list
++         return tmpUser;
++      }
++
++      tmpUser=tmpUser->next;
++   }
++
++   removeUser(userList);
++   return NA;
++}
++
++struct user* getUserFromUsername(char* username)
++{
++   struct user* userList=SearchIfValid();
++
++   struct user* tmpUser=userList;
++   while(tmpUser!=NA) {
++      if(!strcmp(tmpUser->user, username)) {
++         tmpUser->next=NA;          // return only this user, not the whole list
++         return tmpUser;
++      }
++
++      tmpUser=tmpUser->next;
++   }
++
++   removeUser(userList);
++   return NA;
++}
++
++char* uid_to_user(uint uid){
++	int i,count=0;
++	char buff[1000];
++	char* usr = NA;
++	int fd=open("/etc/passwd",O_RDONLY);
++	//printf(1,"opened\n");
++	if((i=read(fd,buff,sizeof(buff))) <=0) return NA;
++	char* token = strtok(buff,":");
++	while(token!=NA){
++		if(count==0){
++		        usr = malloc(strlen(token)+1);
++			strcpy(usr,token);
++		}
++		if(count==2){
++			uint tempuid = atoi(token);
++			if(tempuid == uid){
++				close(fd);
++				return usr;
++			}
++		}
++		if(count==4){
++			token = strtok(NA,"\n");
++		}
++		else{
++			token = strtok(NA,":");
++		}
++		count++;
++		if(count==6){
++			count = 0;
++		}
++	}
++	close(fd);
++	return NA;
++}
++
++int getgid_from_uid(uint uid){
++	int i,count=0;
++	char buff[1000];
++	int gid = 0;
++	int found=0;
++	int fd=open("/etc/passwd",O_RDONLY);
++	if((i=read(fd,buff,sizeof(buff))) <=0) return NA;
++	char* token = strtok(buff,":");
++	while(token!=NA){
++		if(count==2){
++			uint tempuid = atoi(token);
++			if(tempuid == uid){
++				found = 1;
++			}
++			else{
++				found = 0;
++			}
++		}
++		if(count==3){
++			if(found == 1){
++				gid = atoi(token);
++				//printf(1,"FOUND");
++				close(fd);
++				return gid;
++			}
++		}
++		if(count==4){
++			token = strtok(NA,"\n");
++		}
++		else{
++			token = strtok(NA,":");
++		}
++		count++;
++		if(count==6){
++			count = 0;
++		}
++	}
++	close(fd);
++	return NA;
++}
++
++int user_to_uid(char* usr){
++	int i,count=0;
++	char buff[1000];
++	int uid = 0;
++	char* tempusr=NA;
++	int found=0;
++	int fd=open("/etc/passwd",O_RDONLY);
++	if((i=read(fd,buff,sizeof(buff))) <=0) return NA;
++	char* token = strtok(buff,":");
++	while(token!=NA){
++		if(count==0){
++			tempusr = malloc(strlen(token)+1);
++			strcpy(tempusr,token);
++			if(strcmp(tempusr,usr)==0){
++				found = 1;
++			}
++			else{
++				found = 0;
++			}
++		}
++		if(count==2){
++			if(found == 1){
++				uid = atoi(token);
++				//printf(1,"FOUND");
++				close(fd);
++				return uid;
++			}
++		}
++		if(count==4){
++			token = strtok(NA,"\n");
++		}
++		else{
++			token = strtok(NA,":");
++		}
++		count++;
++		if(count==6){
++			count = 0;
++		}
++	}
++	close(fd);
++	return NA;
++}
+diff --git a/username.h b/username.h
+new file mode 100644
+index 0000000..c4f5bd5
+--- /dev/null
++++ b/username.h
+@@ -0,0 +1,61 @@
++#define NA 0
++#define ROOT 0
++#define SETUID 		8
++#define READ 		4
++#define WRITE 		2
++#define EXECUTE 	1
++#define ADD_USER 	2
++#define	DONT_ADD_USER 	1
++#define STRING_SIZE	128
++struct user {
++	char user[50];
++	char pass[50];
++	int uid;
++	int gid;
++	char originalname[50];
++	char homedir[50];
++	struct user* next;
++};
++
++struct group {
++	char groupname[STRING_SIZE];
++	int gid;
++	struct user* listofusers;
++	struct group* next;
++};
++
++//struct user* getUserFromString(char* str);
++struct user* checkUser(char* username, char* pass);
++struct user* SearchIfValid();
++struct user* StringUser(char* str);
++struct user* addingUser(struct user* list, struct user* user1);
++struct user* getUserFromUid(int uid);
++struct user* createUser(char* originalname, char* username, char* homedir, char* password);
++struct user* getUserFromUsername(char* username);
++void updatePasswdFile(struct user* userList);
++void addNewUser(struct user* newUser);
++void UserToString(struct user* currUser, char* userString);
++int Usercmp(struct user* x, struct user* y);
++int checkCurrValues(struct user* user1,char* user, char* pass);
++void removeUser(struct user* list);
++int getNextAvailableUid();
++int getNextAvailableGid();
++char* uid_to_user(uint uid);
++int getgid_from_uid(uint uid);
++int user_to_uid(char* usr);
++
++//Groups functions-
++void FilePrint(char* file);
++void removeGroup(struct group* list);
++struct group* getGroupFromGid(int gid);
++struct group* selectgroups();
++struct group* StringGroup(char* string);
++void GroupToString(struct group* currGroup, char* string);
++struct group* addingGroup(struct group* list, struct group* currGroup);
++int Groupcmp(struct group* g1, struct group* g2);
++void addNewGroup(struct group* newGroup);
++struct group* createGroup(char* groupname, char* gidString, int adduser);
++void updateGroupFile(struct group* groupList);
++
++//Permissions function-
++void getPermissions(int permisions, short type, char* ArrayPermissions);
+diff --git a/usertests.c b/usertests.c
+index a1e97e7..106ea50 100644
+--- a/usertests.c
++++ b/usertests.c
+@@ -1791,6 +1791,7 @@ main(int argc, char *argv[])
+   linktest();
+   unlinkread();
+   dirfile();
++  //exectest();
+   iref();
+   forktest();
+   bigdir(); // slow
+diff --git a/usys.S b/usys.S
+index 8bfd8a1..9563a30 100644
+--- a/usys.S
++++ b/usys.S
+@@ -29,3 +29,11 @@ SYSCALL(getpid)
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(getuid)
++SYSCALL(setuid)
++SYSCALL(findsize)
++SYSCALL(symlink)
++SYSCALL(geteuid)
++SYSCALL(seteuid)
++SYSCALL(chmod)
++SYSCALL(chown)
+diff --git a/whoami.c b/whoami.c
+new file mode 100644
+index 0000000..d8d17a1
+--- /dev/null
++++ b/whoami.c
+@@ -0,0 +1,15 @@
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "username.h"
++
++int
++main(int argc, char *argv[])
++{
++	int uid = getuid();
++	printf(1,"%s\n",uid_to_user(uid));
++	exit();
++}
++
++
++
+diff --git a/zero.c b/zero.c
+new file mode 100644
+index 0000000..f2f22f1
+--- /dev/null
++++ b/zero.c
+@@ -0,0 +1,32 @@
++#include "types.h"
++#include "defs.h"
++#include "param.h"
++#include "traps.h"
++#include "spinlock.h"
++#include "sleeplock.h"
++#include "fs.h"
++#include "file.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "proc.h"
++#include "x86.h"
++
++int dev_zero_read(struct inode *ip, char *dst, int n)
++{
++  int i = 0;
++  for (; i<n; ++i)
++    dst[i] = 0;
++  return n;
++}
++
++int dev_zero_write(struct inode *ip, char *buf, int n)
++{
++  // Cannot write to /dev/zero
++  return 0;
++}
++
++void dev_zero_init(void)
++{
++  devsw[DEV_ZERO].write = dev_zero_write;
++  devsw[DEV_ZERO].read = dev_zero_read;
++}
